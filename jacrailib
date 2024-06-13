@@ -1,3 +1,4 @@
+local library = {}
 local workspace = game.Workspace
 local lighting = game.Lighting
 local players = game.Players
