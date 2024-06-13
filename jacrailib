@@ -1,0 +1,1964 @@
+local workspace = game.Workspace
+local lighting = game.Lighting
+local players = game.Players
+local inputs = game:GetService("UserInputService")
+local loops = game:GetService("RunService")
+local anim = game:GetService("TweenService")
+local http = game:GetService("HttpService")
+
+local client = {}
+local place = game.PlaceId
+local env = getfenv()
+local fps = loops.Heartbeat
+
+local local_plr = players.LocalPlayer
+local local_cam = workspace.CurrentCamera
+
+local function has(object, prop)
+    local has_prop = pcall(function()
+        return object[prop]
+    end)
+
+    return has_prop
+end
+
+local function wait(time)
+    if(time and time <= 0) then
+        return fps:Wait() -- fastest based on fps
+    end
+
+    return env.wait(time) -- remake with custom yeild later
+end
+
+local function create(class, props)
+    local instance = Instance.new(class)
+
+    for prop, val in next, props or {} do
+        instance[prop] = val
+    end
+
+    return instance
+end
+
+local function animate(object, options, to_change)
+    return anim:Create(object, TweenInfo.new(options.time), to_change):Play()
+end
+
+local json = {} do
+    function json:encode(tbl)
+        return http:JSONEncode(tbl)
+    end
+
+    function json:decode(str)
+        return http:JSONDecode(str)
+    end
+
+    function json:is_json(str)
+        return pcall(function()
+            http:JSONDecode(str)
+        end)
+    end
+end
+
+local menu = {flags = {}, tabs = {}, storage = {}} do -- menu module (old for now i cba to make new one yet)
+    --[[
+      > "documentation"
+    
+        local example_tab = menu:AddTab(Name <string>)
+        local example_section = menu:AddSection(Name <string>, Position <number>)
+
+        example_section:AddButton(Name <string>, Options <table>)
+
+        local example_toggle = example_section:AddToggle(Name <string>, Options <table>) do
+            example_toggle:AddColor(Option <table>)
+            example_toggle:AddBind(Option <table>)
+        end
+
+        example_section:AddList(Name <string>, Options <table>)
+
+        example_section:AddColor(Name <string>, Options <table>)
+
+        example_section:AddBind(Name <string>, Options <table>)
+
+        example_section:AddSlider(Name <string>, Options <table>)
+
+        example_section:AddLabel(Name <string>)
+
+
+        menu:Init(Name <string>, Build <string>)
+    ]]
+
+    -- common
+    local function class()
+        local Class = {}
+        Class.__index = Class
+    
+        function Class.new(...)
+            local classInst = setmetatable({}, Class)
+    
+            return classInst:__init(...) or classInst -- support for custom return value
+        end
+    
+        return Class
+    end
+
+    local function round(number, bracket)
+        bracket = bracket or 1
+
+        local result = math.floor(number / bracket + (math.sign(number) * 0.5)) * bracket
+        if result < 0 then
+            result = result + bracket
+        end
+    
+        return result
+    end
+
+    -- sub classes
+    local input = class() do
+        function input:__init(object, option)
+            self.name = name
+            self.type = "bind"
+            self.flag = option.flag or "nil"
+            self.pos = #object.subs
+            self.callback = option.callback
+            self.key = option.key and (type(option.key) == "string" and option.key or tostring(option.key):split(".")[3])
+            self.hold = option.hold
+            menu.flags[self.flag] = self.key
+            menu.flags[self.flag.."_held"] = false
+
+            table.insert(object.subs, self)
+        end
+
+        local blacklisted = {[Enum.KeyCode.Delete] = true}
+        local whitelisted = {[Enum.UserInputType.MouseButton1] = true, [Enum.UserInputType.MouseButton2] = true}
+        local aliases = {
+            ["RightShift"] = "RSHFT", 
+            ["LeftShift"] = "LSHFT", 
+            ["LeftControl"] = "LCRTL",  
+            ["RightControl"] = "RCRTL",
+            ["LeftAlt"] = "LALT",
+            ["RightAlt"] = "RALT",
+            ["CapsLock"] = "CAPS",
+        }
+
+        function input:Init(p1, p2)    
+            local touch = create("TextButton", {
+                Parent = p1,
+                AnchorPoint = Vector2.new(1, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(1, 0, 0.5, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 12.000,
+                TextTransparency = 0.2,
+                TextXAlignment = Enum.TextXAlignment.Right
+            })
+
+            local binding
+            local holding
+            local loop
+
+            function self:set(key)
+                binding = false
+                if loop then
+                    loop:Disconnect()
+                    loop = nil
+                end
+    
+                self.key = key and (type(key) == "string" and key or tostring(key):split(".")[3])
+                if self.key then
+                    menu.flags[self.flag] = self.key
+                    if self.key:match("Mouse") then
+                        touch.Text = ("[" .. ("M" .. self.key:sub(12, 13)) .. "]"):upper()
+                    else
+                        touch.Text = ("[" .. (aliases[self.key] or self.key) .. "]"):upper()
+                    end
+                else
+                    menu.flags[self.flag] = nil
+                    touch.Text = ("[-]"):upper()
+                end
+                
+                touch.Size = UDim2.new(0, touch.TextBounds.X + 4, 0, 20)
+            end
+
+            self:set(self.key)
+
+            ;(p2 or touch).MouseButton1Click:Connect(function()
+                binding = true
+                touch.Text = "..."
+            end)
+    
+            table.insert(menu.storage, inputs.InputBegan:Connect(function(i, gpe)
+                if inputs:GetFocusedTextBox() then return end
+                if (i.KeyCode.Name == self.key or i.UserInputType.Name == self.key) and(not binding) then
+                    if self.hold then
+                        loop = loops.Heartbeat:Connect(function()
+                            if binding then
+                                menu.flags[self.flag.."_held"] = false
+                                if self.callback then
+                                    self.callback(false)
+                                end
+
+                                loop:Disconnect()
+                                loop = nil
+                            else
+                                menu.flags[self.flag.."_held"] = true
+                                if self.callback then
+                                    self.callback(true)
+                                end
+                            end
+                        end)
+                    else
+                        if self.callback then
+                            self.callback(true)
+                        end
+                    end
+                elseif(binding) then
+                    local key
+                    if whitelisted[i.UserInputType] then
+                        key = i.UserInputType.Name or self.key
+                    elseif not blacklisted[i.KeyCode] and i.KeyCode ~= Enum.KeyCode.Backspace then
+                        key = i.KeyCode.Name or self.key
+                    end
+    
+                    self:set(key)
+                end
+            end))
+    
+            table.insert(menu.storage, inputs.InputEnded:Connect(function(i)
+                if i.KeyCode.Name == self.key or i.UserInputType.Name == self.key or i.UserInputType.Name == "MouseMovement" then
+                    if loop then
+                        menu.flags[self.flag.."_held"] = false
+                        if(self.callback) then
+                            self.callback(false)
+                        end
+
+                        loop:Disconnect()
+                        loop = nil
+                    end
+                end
+            end))
+        end
+    end
+
+    local picker = class() do
+        function picker:__init(object, option)
+            self.name = name
+            self.type = "color"
+            self.flag = option.flag or "nil"
+            self.pos = #object.subs
+            self.callback = option.callback
+            self.color = option.color or Color3.fromRGB(255, 255, 255)
+            self.alpha = option.alpha or nil
+            menu.flags[self.flag] = self.color
+            menu.flags[self.flag.."_alpha"] = self.alpha
+
+            table.insert(object.subs, self)
+        end
+
+        function picker:Init(p1, p2)    
+            local touch = create("ImageButton", {
+                Parent = p1,
+                AnchorPoint = Vector2.new(1, 0.5),
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(1, 0, 0.5, 0),
+                Size = UDim2.new(0, 18, 0, 12),
+                AutoButtonColor = false,
+                ImageTransparency = 1
+            })
+            
+            local preview = create("Frame", {
+                Parent = touch,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+            
+            local gradient = create("ImageLabel", {
+                Parent = preview,
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                Image = "rbxassetid://2454009026",
+                ImageColor3 = Color3.fromRGB(0, 0, 0),
+                ImageTransparency = 0.600
+            })
+
+
+            local picker = create("ImageButton", {
+                Parent = menu.inst,
+                ZIndex = 4,
+                AnchorPoint = Vector2.new(1, 0),
+                Visible = false,
+                BackgroundColor3 = Color3.fromRGB(60, 60, 70),
+                BorderColor3 = Color3.fromRGB(0, 0, 0),
+                Position = UDim2.new(0, 1000, 0, 100),
+                Size = UDim2.new(0, 195, 0, 240),
+                ImageTransparency = 1,
+                AutoButtonColor = false
+            })
+            
+            local back = create("Frame", {
+                ZIndex = 4,
+                Parent = picker,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(32, 32, 33),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+            
+            local dark = create("ImageButton", {
+                ZIndex = 4,
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(255, 0, 0),
+                BorderColor3 = Color3.fromRGB(0, 0, 0),
+                ClipsDescendants = true,
+                Position = UDim2.new(0, 6, 0, 6),
+                Size = UDim2.new(0, 180, 0, 180),
+                Image = "rbxassetid://4155801252",
+                AutoButtonColor = false
+            })
+            
+            local darkRing = create("ImageLabel", {
+                ZIndex = 99,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Parent = dark,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(0, 8, 0, 8),
+                Image = "rbxassetid://3570695787",
+                ImageColor3 = Color3.fromRGB(0, 0, 0),
+                ScaleType = Enum.ScaleType.Slice,
+                SliceCenter = Rect.new(100, 100, 100, 100),
+                SliceScale = 0.040
+            })
+            
+            local darkRingIn = create("ImageLabel", {
+                ZIndex =99,
+                Parent = darkRing,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -4, 1, -4),
+                Image = "rbxassetid://3570695787",
+                ScaleType = Enum.ScaleType.Slice,
+                SliceCenter = Rect.new(100, 100, 100, 100),
+                SliceScale = 0.040
+            })
+            
+            local hue = create("ImageButton", {
+                ZIndex = 4,
+                Parent = back,
+                AnchorPoint = Vector2.new(0, 1),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderColor3 = Color3.fromRGB(0, 0, 0),
+                Position = UDim2.new(0, 6, 0, 202),
+                Size = UDim2.new(1, -12, 0, 10),
+                ImageTransparency = 1,
+                AutoButtonColor = false
+            })
+            
+            local hueGradient = create("UIGradient", {
+                Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)),
+                    ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 0, 255)),
+                    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 0, 255)),
+                    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(0, 255, 255)),
+                    ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 255, 0)),
+                    ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 255, 0)),
+                    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0))
+                }),
+                Rotation = 180,
+                Parent = hue
+            })
+            
+            local hueRing = create("Frame", {
+                ZIndex = 4,
+                Parent = hue,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderColor3 = Color3.fromRGB(0, 0, 0),
+                BorderSizePixel = 2,
+                Size = UDim2.new(0, 2, 1, 0)
+            })
+            
+            local box = create("TextButton", {
+                ZIndex = 4,
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0, 6, 0, 210),
+                Size = UDim2.new(1, -12, 0, 20),
+                AutoButtonColor = false,
+                Font = Enum.Font.Gotham,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000
+            })
+            
+            local boxBack = create("Frame", {
+                ZIndex = 4,
+                Parent = box,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+            
+            local value = create("TextBox", {
+                ZIndex = 4,
+                Parent = boxBack,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                ClearTextOnFocus = false,
+                Font = Enum.Font.Gotham,
+                Text = "255, 255, 255",
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000
+            })
+
+            local alphaHue
+            local alphaRing
+
+            local r, g, b, a = self.color.r * 255, self.color.g * 255, self.color.b * 255, self.alpha
+            local h, s, v = Color3.toHSV(self.color)
+
+            local hueconnection
+            local darknessconnection
+            local alphaconnection
+
+            local function update(ignore)
+                anim:Create(hueRing, TweenInfo.new(0.12), {Position = UDim2.new(h, 0, 0, 0)}):Play()
+                anim:Create(darkRing, TweenInfo.new(0.12), {Position = UDim2.new(s, 0, 1 - v, 0)}):Play()
+
+                dark.BackgroundColor3 = Color3.fromHSV(h,1,1)
+                preview.BackgroundColor3 = Color3.fromHSV(h, s, v)
+                value.Text = tostring(table.concat({math.floor(r), math.floor(g), math.floor(b)}, ", "))
+
+                if(self.alpha) then
+                    anim:Create(alphaRing, TweenInfo.new(0.12), {Position = UDim2.new(0, 0, a, 0)}):Play()
+
+                    alphaHue.ImageColor3 = Color3.fromHSV(h,1,1)
+
+                    self.alpha = a
+                    menu.flags[self.flag.."_alpha"] = self.alpha
+                end
+
+                self.color = Color3.fromHSV(h, s, v)
+                menu.flags[self.flag] = self.color
+                if(not(ignore) and self.callback) then
+                    self.callback(self.color, self.alpha)
+                end
+            end
+
+            value.FocusLost:Connect(function()
+                local args = value.Text:split(",")
+
+                r, g, b = (tonumber(args[1]) or r), (tonumber(args[2]) or g), (tonumber(args[3]) or b)
+                h, s, v = Color3.toHSV(Color3.fromRGB(r, g, b))
+                update()
+            end)
+
+            hue.MouseButton1Down:Connect(function()
+                hueconnection = loops.Heartbeat:Connect(function()
+                    local mouse = inputs:GetMouseLocation() + Vector2.new(0, -36)
+                    local color = Color3.fromHSV(h,s,v)
+
+                    h = 1 - math.clamp(1 - ((mouse.X - hue.AbsolutePosition.X) / hue.AbsoluteSize.X), 0, 1)
+                    r, g, b = math.floor(color.r * 255), math.floor(color.g * 255), math.floor(color.b * 255)
+
+                    update()
+                end)
+            end)
+    
+            dark.MouseButton1Down:Connect(function()
+                darknessconnection = loops.Heartbeat:Connect(function()
+                    local mouse = inputs:GetMouseLocation() + Vector2.new(0, -36)
+                    local color = Color3.fromHSV(h,s,v)
+                    
+                    s = math.clamp((mouse.X - dark.AbsolutePosition.X) / dark.AbsoluteSize.X, 0, 1)
+                    v = 1 - math.clamp((mouse.Y - dark.AbsolutePosition.Y) / dark.AbsoluteSize.Y, 0, 1)
+                    r, g, b = math.floor(color.r * 255), math.floor(color.g * 255), math.floor(color.b * 255)
+
+                    update()
+                end)
+            end)
+
+            inputs.InputEnded:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                    if hueconnection then
+                        hueconnection:Disconnect()
+                        hueconnection = nil
+                    end
+                    if darknessconnection then
+                        darknessconnection:Disconnect()
+                        darknessconnection = nil
+                    end
+                    if alphaconnection then
+                        alphaconnection:Disconnect()
+                        alphaconnection = nil
+                    end
+                end
+            end)
+
+            ;(p2 or touch).MouseButton1Click:Connect(function()
+                picker.Position = UDim2.new(0, preview.AbsolutePosition.X + touch.Size.X.Offset - 1, 0, preview.AbsolutePosition.Y + touch.Size.Y.Offset + 2)
+                picker.Visible = not picker.Visible
+            end)
+
+            if(self.alpha) then
+                picker.Size = UDim2.new(0, 210, 0, 240)
+    
+                local alpha = create("ImageButton", {
+                    ZIndex = 4,
+                    Parent = back,
+                    AnchorPoint = Vector2.new(1, 0),
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    Position = UDim2.new(1, -6, 0, 6),
+                    Size = UDim2.new(0, 10, 0, 180),
+                    Image = "rbxassetid://4632082392",
+                    ScaleType = Enum.ScaleType.Tile,
+                    TileSize = UDim2.new(0, 5, 0, 5),
+                    AutoButtonColor = false
+                })
+                
+                alphaHue = create("ImageLabel", {
+                    ZIndex = 4,
+                    Parent = alpha,
+                    BackgroundTransparency = 1.000,
+                    Rotation = 180.000,
+                    Size = UDim2.new(1, 0, 1, 0),
+                    Image = "rbxassetid://2454009026",
+                    ImageColor3 = Color3.fromRGB(255, 0, 0)
+                })
+                
+                alphaRing = create("Frame", {
+                    ZIndex = 4,
+                    Parent = alphaHue,
+                    AnchorPoint = Vector2.new(0, 1),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                    BorderColor3 = Color3.fromRGB(0, 0, 0),
+                    BorderSizePixel = 2,
+                    Position = UDim2.new(0, 0, 1, 0),
+                    Size = UDim2.new(1, 0, 0, 2)
+                })
+    
+                alpha.MouseButton1Down:Connect(function()
+                    hueconnection = loops.Heartbeat:Connect(function()
+                        local mouse = inputs:GetMouseLocation() + Vector2.new(0, -36)
+
+                        a = math.clamp(1 - ((mouse.Y - alpha.AbsolutePosition.Y) / alpha.AbsoluteSize.Y), 0, 1)
+                        
+                        update()
+                    end)
+                end)
+            end
+            
+            update(true)
+        end
+    end
+
+    -- object classes
+    local button = class() do
+        function button:__init(section, name, option)
+            self.name = name
+            self.type = "button"
+            self.flag = option.flag or "nil"
+            self.pos = #section.objects
+            self.callback = option.callback
+            menu.flags[self.flag] = false
+
+            table.insert(section.objects, self)
+        end
+
+        function button:Init(p1)
+            local button = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, 0, 0, 20),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+
+            local touch = create("TextButton", {
+                Parent = button,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(20, 20, 20),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2),
+                AutoButtonColor = false,
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                Active = false
+            })
+
+            function self:click()
+                coroutine.wrap(function()
+                    if(not menu) then return end
+                    menu.flags[self.flag] = true
+                    wait(0.1)
+                    if(not menu) then return end
+                    menu.flags[self.flag] = false
+                end)()
+
+                if self.callback then
+                    self.callback()
+                end
+            end
+
+            touch.MouseButton1Click:Connect(function()
+                self:click()
+            end)
+        end
+    end
+
+    local toggle = class() do
+        function toggle:__init(section, name, option)
+            self.subs = {}
+            self.name = name
+            self.type = "toggle"
+            self.flag = option.flag or "nil"
+            self.pos = #section.objects
+            self.callback = option.callback
+            self.state = option.state or false
+            menu.flags[self.flag] = self.state
+
+            table.insert(section.objects, self)
+        end
+
+        function toggle:AddColor(...)
+            return picker.new(self, ...)
+        end
+
+        function toggle:AddBind(...)
+            return input.new(self, ...)
+        end
+
+        function toggle:Init(p1)
+            local toggle = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 18),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                ZIndex = #self.subs > 0 and 1 or 2,
+                Active = false
+            })
+
+            local touch = create("ImageButton", {
+                Parent = toggle,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0, -2, 0.5, 0),
+                Size = UDim2.new(0, 16, 0, 16),
+                AutoButtonColor = false,
+                ImageTransparency = 1,
+                Active = false
+            })
+
+            local dark = create("Frame", {
+                Parent = touch,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+
+            local accent = create("Frame", {
+                Parent = dark,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = self.state and 0 or 1
+            })
+
+            local gradient = create("ImageLabel", {
+                Parent = accent,
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                Image = "rbxassetid://2454009026",
+                ImageColor3 = Color3.fromRGB(0, 0, 0),
+                ImageTransparency = self.state and 0.6 or 1
+            })
+
+            local text = create("TextLabel", {
+                Parent = toggle,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 20, 0.5, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+            
+            local subs = create("Frame", {
+                Parent = toggle,
+                AnchorPoint = Vector2.new(1, 0),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(1, 0, 0, 0),
+                Size = UDim2.new(0, 100, 1, 0)
+            })
+
+            local subLayout = create("UIListLayout", {
+                Parent = subs,
+                FillDirection = Enum.FillDirection.Horizontal,
+                HorizontalAlignment = Enum.HorizontalAlignment.Right,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                VerticalAlignment = Enum.VerticalAlignment.Center,
+                Padding = UDim.new(0, 6)
+            })
+
+            function self:toggle(state)
+                self.state = state or not self.state
+                menu.flags[self.flag] = self.state
+                anim:Create(accent, TweenInfo.new(0.12), {BackgroundTransparency = self.state and 0 or 1}):Play()
+                anim:Create(gradient, TweenInfo.new(0.12), {ImageTransparency = self.state and 0.6 or 1}):Play()
+
+                if self.callback then
+                    self.callback(self.state)
+                end
+            end
+
+            (#self.subs > 0 and touch or toggle).MouseButton1Click:Connect(function()
+                self:toggle()
+            end)
+
+            self.container = subs
+        end
+    end
+
+    local box = class() do
+        function box:__init(section, name, option)
+            self.name = name
+            self.type = "box"
+            self.flag = option.flag or "nil"
+            self.pos = #section.objects
+            self.callback = option.callback
+            self.text = option.text or ""
+            menu.flags[self.flag] = self.text
+
+            table.insert(section.objects, self)
+        end
+
+        function box:Init(p1)
+            local box = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 42),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+
+            local touch = create("TextButton", {
+                Parent = box,
+                AnchorPoint = Vector2.new(0.5, 1),
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0.5, 0, 1, 0),
+                Size = UDim2.new(1, 4, 0, 20),
+                AutoButtonColor = false,
+                Font = Enum.Font.Gotham,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                Active = false
+            })
+            
+            local back = create("Frame", {
+                Parent = touch,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+
+            local value = create("TextBox", {
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -12, 1, 0),
+                ClearTextOnFocus = false,
+                Font = Enum.Font.Gotham,
+                Text = self.text,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Active = false
+            })
+
+            local text = create("TextLabel", {
+                Parent = box,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 1, 0, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            function self:set(text)
+                self.text = text or value.Text
+                value.Text = self.text
+                menu.flags[self.flag] = self.text
+
+                if(self.callback) then
+                    self.callback(self.text)
+                end
+            end
+
+            value.FocusLost:Connect(function()
+                self:set()
+            end)
+        end
+    end
+
+    local slider = class() do
+        function slider:__init(section, name, option)
+            self.name = name
+            self.type = "slider"
+            self.flag = option.flag or "nil"
+            self.pos = #section.objects
+            self.callback = option.callback
+            self.min = option.min or 0
+            self.max = option.max or 100
+            self.float = option.float or 1
+            self.value = round(math.clamp(option.value or self.min, self.min, self.max), self.float)
+            self.suffix = option.suffix or ""
+            menu.flags[self.flag] = self.value
+
+            table.insert(section.objects, self)
+        end
+
+        function slider:Init(p1)
+            local slider = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 34),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+
+            local touch = create("ImageButton", {
+                Parent = slider,
+                AnchorPoint = Vector2.new(0.5, 1),
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0.5, 0, 1, 0),
+                Size = UDim2.new(1, 4, 0, 12),
+                AutoButtonColor = false,
+                ImageTransparency = 1,
+                Active = false
+            })
+
+            local back = create("Frame", {
+                Parent = touch,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+
+            local text = create("TextLabel", {
+                Parent = slider,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 1, 0, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            local value = create("TextBox", {
+                Parent = slider,
+                AnchorPoint = Vector2.new(1, 0),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(1, 0, 0, 0),
+                Size = UDim2.new(0, 30, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = tostring(self.value, self.float) .. self.suffix,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Right,
+                Active = false
+            })
+
+            local fill = create("Frame", {
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+                BorderSizePixel = 0,
+                Size = UDim2.new((self.value - self.min) / (self.max - self.min), 0, 1, 0)
+            })
+
+            local gradient = create("ImageLabel", {
+                Parent = fill,
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                Image = "rbxassetid://2454009026",
+                ImageColor3 = Color3.fromRGB(0, 0, 0),
+                ImageTransparency = 0.600
+            })
+
+            function self:set(val)
+                self.value = round(val, self.float)
+                self.value = math.clamp(self.value, self.min, self.max)
+                menu.flags[self.flag] = self.value
+                value.Text = tostring(self.value) .. self.suffix
+
+                -- anim:Create(fill, TweenInfo.new(0.06), {Size = UDim2.new((self.value - self.min) / (self.max - self.min), 0, 1, 0)}):Play()
+                fill.Size = UDim2.new((self.value - self.min) / (self.max - self.min), 0, 1, 0)
+
+                if(self.callback) then
+                    self.callback(self.value)
+                end
+            end
+
+            local sliding = false do
+                touch.InputBegan:Connect(function(i)
+                    if(i.UserInputType == Enum.UserInputType.MouseButton1) then
+                        sliding = true
+                        self:set(self.min + ((i.Position.X - back.AbsolutePosition.X) / back.AbsoluteSize.X) * (self.max - self.min))
+                    end
+                end)
+
+                touch.InputEnded:Connect(function(i)
+                    if(i.UserInputType == Enum.UserInputType.MouseButton1) then
+                        sliding = false
+                    end
+                    if(i.UserInputType == Enum.UserInputType.MouseMovement) then
+                        value:ReleaseFocus()
+                    end
+                end)
+
+                table.insert(menu.storage, inputs.InputChanged:Connect(function(i)
+                    if(i.UserInputType == Enum.UserInputType.MouseMovement and sliding) then
+                        self:set(self.min + ((i.Position.X - back.AbsolutePosition.X) / back.AbsoluteSize.X) * (self.max - self.min))
+                    end
+                end))
+
+                value:GetPropertyChangedSignal("Text"):Connect(function()
+                    if(sliding) then return end
+                    if(not tonumber(value.Text)) then
+                        value.Text = value.Text:gsub("%D", "")
+                    else
+                        sliding = true
+                        self:set(value.Text)
+                        sliding = false
+                    end
+                end)
+            end
+        end
+    end
+
+    local label = class() do
+        function label:__init(section, name, option)
+            self.name = name
+            self.type = "label"
+            self.pos = #section.objects
+
+            table.insert(section.objects, self)
+        end
+
+        function label:Init(p1)
+            local label = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 16),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+
+            local text = create("TextLabel", {
+                Parent = label,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 1, 0.5, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            function self:set(t)
+                text.Text = t or text.Text
+            end
+        end
+    end
+
+    local list = class() do
+        function list:__init(section, name, option)
+            self.name = name
+            self.type = "list"
+            self.flag = option.flag or "nil"
+            self.pos = #section.objects
+            self.callback = option.callback
+            self.value = option.value or nil
+            self.values = (option.values and {unpack(option.values)}) or {}
+            self.multiselect = option.multiselect or (type(self.value) == "table" or false)
+            self.players = option.players or false -- eh
+            menu.flags[self.flag] = (self.value or (self.multiselect and {}))
+
+            table.insert(section.objects, self)
+        end
+
+        function list:Init(p1)
+            local list = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 42),
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+
+            local box = create("TextButton", {
+                Parent = list,
+                AnchorPoint = Vector2.new(0.5, 1),
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0.5, 0, 1, 0),
+                Size = UDim2.new(1, 4, 0, 20),
+                AutoButtonColor = false,
+                Font = Enum.Font.Gotham,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                Active = false
+            })
+            
+            local back = create("Frame", {
+                Parent = box,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+            
+            local value = create("TextBox", {
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -12, 1, 0),
+                ClearTextOnFocus = false,
+                Font = Enum.Font.Gotham,
+                Text = "Value",
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Active = false
+            })
+            
+            local touch = create("ImageButton", {
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                ZIndex = 2,
+                Image = "rbxasset://textures/ui/GuiImagePlaceholder.png",
+                ImageTransparency = 1.000,
+                Active = false
+            })
+            
+            local icon = create("ImageLabel", {
+                Parent = back,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(1, -16, 0.5, 0),
+                Rotation = 90.000,
+                Size = UDim2.new(0, 8, 0, 8),
+                Image = "rbxassetid://4918373417",
+                ImageTransparency = 0.400,
+                ScaleType = Enum.ScaleType.Fit
+            })
+            
+            local text = create("TextLabel", {
+                Parent = list,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 1, 0, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+
+            local drop = create("Frame", {
+                Parent = menu.inst,
+                Visible = false,
+                BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                Position = UDim2.new(0, 414, 0, 394),
+                Size = UDim2.new(0, 211, 0, 58)
+            })
+
+            local back = create("Frame", {
+                Parent = drop,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2)
+            })
+            
+            local scroll = create("ScrollingFrame", {
+                Parent = back,
+                Active = true,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2),
+                ScrollBarThickness = 1,
+                ScrollBarImageColor3 = Color3.fromRGB(0, 0, 0)
+            })
+            
+            local scrollLayout = create("UIListLayout", {
+                Parent = scroll,
+                SortOrder = Enum.SortOrder.LayoutOrder
+            })
+            
+            local scrollPadding = create("UIPadding", {
+                Parent = scroll,
+                PaddingLeft = UDim.new(0, 4)
+            })
+
+            if(self.value) then
+                if(self.multiselect) then
+                    for _, value in next, self.value do
+                        if(not table.find(self.values, value)) then
+                            table.insert(self.values, value)
+                        end
+                    end
+
+                    value.Text = #self.value > 0 and table.concat(self.value, ", ") or "..."
+                else
+                    if(not table.find(self.values, self.value)) then
+                        table.insert(self.values, self.value)
+                    end
+
+                    value.Text = self.value
+                end
+            else
+                self.value = self.multiselect and {}
+                value.Text = "..."
+            end
+
+            for _, val in pairs(self.values) do -- id rather do an index loop than pairs
+                local button = create("TextButton", {
+                    Parent = scroll,
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                    BackgroundTransparency = 1.000,
+                    LayoutOrder = #scroll:GetChildren(),
+                    Size = UDim2.new(0, 200, 0, 18),
+                    Font = Enum.Font.Gotham,
+                    Text = val,
+                    ZIndex = 4,
+                    TextColor3 = Color3.fromRGB(210, 210, 210),
+                    TextSize = 13,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTransparency = self.multiselect and (table.find(self.value, val) and 0 or 0.5) or (val == self.value and 0 or 0.5)
+                })
+
+                button.MouseButton1Click:Connect(function()
+                    if(self.multiselect) then
+                        local state = table.find(self.value, val)
+
+                        if state then
+                            table.remove(self.value, state)
+                        else
+                            table.insert(self.value, val)
+                        end
+
+                        button.TextTransparency = state and 0.5 or 0
+                        value.Text = #self.value > 0 and table.concat(self.value, ", ") or "..."
+                        menu.flags[self.flag] = self.value -- eh
+                    else
+                        for _, btn in next, scroll:GetChildren() do
+                            if(btn:IsA("TextButton")) then
+                                btn.TextTransparency = btn == button and 0 or 0.5
+                            end
+                        end
+
+                        self.value = val
+                        value.Text = self.value
+                        menu.flags[self.flag] = self.value
+                    end
+
+                    if(self.callback) then
+                        self.callback(self.value)
+                    end
+                end)
+            end
+
+            scrollLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                drop.Size = UDim2.new(0, 211, 0, math.clamp(scrollLayout.AbsoluteContentSize.Y + 4, 0, 58))
+                scroll.CanvasSize = UDim2.new(0, 0, 0, scrollLayout.AbsoluteContentSize.Y)
+            end)
+
+            touch.MouseButton1Click:Connect(function()
+                drop.Position = UDim2.new(0, box.AbsolutePosition.X, 0, box.AbsolutePosition.Y + 22)
+                drop.Visible = not drop.Visible
+            end)
+        end
+    end
+
+    local bind = class() do
+        function bind:__init(section, name, option)
+            self.subs = {} -- am lazy, should be fine
+            self.pos = #section.objects
+            self.name = name
+            self.type = "bind"
+            self.name = name
+
+            table.insert(section.objects, self)
+            return input.new(self, option)
+        end
+
+        function bind:Init(p1)
+            local bind = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 16),
+                ImageTransparency = 1.000,
+                ZIndex = 2
+            })
+
+            local text = create("TextLabel", {
+                Parent = bind,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 0, 0.5, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            self.button = bind
+            self.container = bind
+        end
+    end
+
+    local color = class() do
+        function color:__init(section, name, option)
+            self.subs = {} -- am lazy, should be fine
+            self.pos = #section.objects
+            self.name = name
+            self.type = "color"
+            self.name = name
+
+            table.insert(section.objects, self)
+            return picker.new(self, option)
+        end
+
+        function color:Init(p1)
+            local color = create("ImageButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderColor3 = Color3.fromRGB(40, 40, 40),
+                LayoutOrder = self.pos,
+                Size = UDim2.new(1, -4, 0, 16),
+                ImageTransparency = 1.000,
+                ZIndex = 2
+            })
+
+            local text = create("TextLabel", {
+                Parent = color,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 0, 0.5, 0),
+                Size = UDim2.new(0, 200, 0, 20),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextSize = 13.000,
+                TextXAlignment = Enum.TextXAlignment.Left
+            })
+
+            self.button = color
+            self.container = color
+        end
+    end
+
+    local section = class() do
+        function section:__init(tab, name, pos)
+            self.name = name
+            self.pos = pos
+            self.objects = {}
+            table.insert(tab.sections, self)
+        end
+
+        function section:AddButton(...)
+            return button.new(self, ...)
+        end
+
+        function section:AddToggle(...)
+            return toggle.new(self, ...)
+        end
+
+        function section:AddBox(...)
+            return box.new(self, ...)
+        end
+
+        function section:AddSlider(...)
+            return slider.new(self, ...)
+        end
+
+        function section:AddList(...)
+            return list.new(self, ...)
+        end
+
+        function section:AddLabel(...)
+            return label.new(self, ...)
+        end
+
+        function section:AddBind(...)
+            return bind.new(self, ...)
+        end
+
+        function section:AddColor(...)
+            return color.new(self, ...)
+        end
+
+        function section:Init(p1)
+            local section = create("Frame", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(32, 32, 33),
+                BorderColor3 = Color3.fromRGB(60, 60, 70),
+                Position = UDim2.new(-0.0259740259, 0, 0.00659133727, 0),
+                Size = UDim2.new(1, 0, 0, 400)
+            })
+
+            local sectionAccent = create("Frame", {
+                Parent = section,
+                AnchorPoint = Vector2.new(0.5, 0),
+                BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+                BorderColor3 = Color3.fromRGB(27, 42, 53),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0.5, 0, 0, -1),
+                Size = UDim2.new(1, 2, 0, 1)
+            })
+
+            local container = create("Frame", {
+                Parent = section,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -20, 1, -26)
+            })
+
+            local sectionLayout = create("UIListLayout", {
+                Parent = container,
+                HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 6)
+            })
+
+            local text = create("TextLabel", {
+                Parent = section,
+                AnchorPoint = Vector2.new(0, 0.5),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 12, 0, 0),
+                Size = UDim2.new(0, 100, 0, 3),
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(255, 255, 255),
+                TextSize = 13.000,
+                TextTransparency = 0.100
+            })
+
+            text.Size = UDim2.new(0, text.TextBounds.X + 4, 0, 3)
+            sectionLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                section.Size = UDim2.new(1, 0, 0, sectionLayout.AbsoluteContentSize.Y + 24)
+            end)
+
+            self.container = container
+        end
+    end
+
+    local tab = class() do
+        function tab:__init(name)
+            self.name = name
+            self.pos = #menu.tabs + 1 
+            self.sections = {}
+            table.insert(menu.tabs, self)
+        end
+
+        function tab:AddSection(...)
+            return section.new(self, ...)
+        end
+
+        function tab:Show() -- igh look away 
+            if(self.inst.Visible) then return end
+            for _, tab in next, menu.tabs do
+                local children = tab.btn:GetChildren()
+                children[1].Visible = false
+                children[2].Visible = false
+                children[3].Visible = false
+                tab.inst.Visible = false
+                tab.btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                tab.btn.BackgroundColor3 = Color3.fromRGB(32, 32, 33)
+            end
+
+            local children = self.btn:GetChildren()
+            children[1].Visible = self.pos > 1
+            children[2].Visible = self.pos < #menu.tabs      
+            children[3].Visible = true
+            children[3].Position = self.pos == 1 and UDim2.new(0, 0, 1, 1) or UDim2.new(0, 1, 1, 1)
+            children[3].Size = (self.pos == 1 or self.pos == #menu.tabs) and UDim2.new(1, -1, 0, 1) or UDim2.new(1, -2, 0, 1)
+            self.inst.Visible = true
+            self.btn.TextColor3 = Color3.fromRGB(52, 134, 235)
+            self.btn.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+        end
+
+        function tab:Init(p1, p2)
+            local btn = create("TextButton", {
+                Parent = p1,
+                BackgroundColor3 = Color3.fromRGB(32, 32, 33),
+                BorderSizePixel = 0,
+                LayoutOrder = #menu.tabs + 1,
+                Size = UDim2.new(0, 0, 1, 0),
+                AutoButtonColor = false,
+                Font = Enum.Font.Gotham,
+                Text = self.name,
+                TextColor3 = Color3.fromRGB(255, 255, 255),
+                TextSize = 13.000,
+                TextTransparency = 0.100,
+                Active = false
+            })
+
+            local left = create("Frame", {
+                Parent = btn,
+                BackgroundColor3 = Color3.fromRGB(60, 60, 70),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 0, 0, -2),
+                Size = UDim2.new(0, 1, 1, 2),
+                Visible = false
+            })
+
+            local right = create("Frame", {
+                Parent = btn,
+                AnchorPoint = Vector2.new(1, 0),
+                BackgroundColor3 = Color3.fromRGB(60, 60, 70),
+                BorderSizePixel = 0,
+                Position = UDim2.new(1, 0, 0, -2),
+                Size = UDim2.new(0, 1, 1, 2),
+                Visible = false
+            })
+
+            local bottom = create("Frame", {
+                Parent = btn,
+                AnchorPoint = Vector2.new(0, 1),
+                BackgroundColor3 = Color3.fromRGB(24, 24, 24),
+                BorderSizePixel = 0,
+                Position = UDim2.new(0, 0, 1, 1),
+                Size = UDim2.new(1, -1, 0, 1),
+                Visible = false
+            })
+
+            local padding = create("UIPadding", {
+                Parent = btn,
+                PaddingTop = UDim.new(0, 2)
+            })
+
+            local tab = create("ScrollingFrame", {
+                Parent = p2,
+                Visible = false,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, 0, 1, 0),
+                ScrollBarThickness = 0,
+                CanvasSize = UDim2.new(0,0,2,0)
+            })
+
+            local left = create("Frame", {
+                Parent = tab,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(0, 12, 0, 12),
+                Size = UDim2.new(0.5, -18, 1, -24)
+            })
+
+            local leftLayout = create("UIListLayout", {
+                Parent = left,
+                HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 12)
+            })
+
+            local right = create("Frame", {
+                Parent = tab,
+                AnchorPoint = Vector2.new(1, 0),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Position = UDim2.new(1, -12, 0, 12),
+                Size = UDim2.new(0.5, -18, 1, -24)
+            })
+
+            local rightLayout = create("UIListLayout", {
+                Parent = right,
+                HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 12)
+            })
+
+            for _, button in next, p1:GetChildren() do
+                if(button:IsA("TextButton")) then
+                    button.Size = UDim2.new(1 / #menu.tabs, 0, 1, 0)
+                end
+            end
+
+            btn.MouseButton1Click:Connect(function() -- ugh
+                self:Show()
+            end)
+
+            local function fixScrollSize()
+                tab.CanvasSize = UDim2.new(0, 0, 0, (leftLayout.AbsoluteContentSize.Y < rightLayout.AbsoluteContentSize.Y and rightLayout.AbsoluteContentSize.Y or leftLayout.AbsoluteContentSize.Y) + 24)
+            end
+
+            leftLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fixScrollSize)
+            rightLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fixScrollSize)
+
+            self.inst = tab
+            self.btn = btn
+            self.containers = {left, right}
+        end
+    end
+
+    -- module functions
+    function menu:AddTab(name)
+        return tab.new(name)
+    end
+
+    function menu:Render(name, extension, build)
+        local gui = create("ScreenGui", {
+            Parent = loops:IsStudio() and local_plr:WaitForChild("PlayerGui") or game:GetService("CoreGui"),
+            Name = name
+        })
+
+        local main = create("Frame", {
+            Parent = gui,
+            BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+            BorderColor3 = Color3.fromRGB(0, 0, 0),
+            Position = UDim2.new(0.5, -250, 0.5, -300),
+            Size = UDim2.new(0, 500, 0, 600)
+        })
+
+        local back = create("Frame", {
+            Parent = main,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = Color3.fromRGB(24, 24, 24),
+            BorderColor3 = Color3.fromRGB(60, 60, 70),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, -4, 1, -4)
+        })
+
+        local selection = create("Frame", {
+            Parent = back,
+            AnchorPoint = Vector2.new(0.5, 0),
+            BackgroundColor3 = Color3.fromRGB(24, 24, 24),
+            BorderColor3 = Color3.fromRGB(60, 60, 70),
+            Position = UDim2.new(0.5, 0, 0, 27),
+            Size = UDim2.new(1, 0, 0, 25)
+        })
+
+        local selectionLayout = create("UIListLayout", {
+            Parent = selection,
+            FillDirection = Enum.FillDirection.Horizontal,
+            SortOrder = Enum.SortOrder.LayoutOrder
+        })
+
+        local tabs = create("Frame", {
+            Parent = back,
+            AnchorPoint = Vector2.new(0.5, 1),
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundTransparency = 1.000,
+            BorderSizePixel = 0,
+            Position = UDim2.new(0.5, 1, 1, 0),
+            Size = UDim2.new(1, 2, 1, -53)
+        })
+
+        local top = create("Frame", {
+            Parent = back,
+            AnchorPoint = Vector2.new(0.5, 0),
+            BackgroundColor3 = Color3.fromRGB(41, 41, 44),
+            BorderColor3 = Color3.fromRGB(60, 60, 70),
+            Position = UDim2.new(0.5, 0, 0, 0),
+            Size = UDim2.new(1, 0, 0, 26),
+        })
+
+        local text = create("TextLabel", {
+            Parent = top,
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundTransparency = 1.000,
+            Position = UDim2.new(0, 6, 0, 0),
+            Size = UDim2.new(0, 200, 1, -1),
+            Font = Enum.Font.Gotham,
+            Text = name,
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            TextSize = 15.000,
+            TextTransparency = 0.100,
+            TextXAlignment = Enum.TextXAlignment.Left
+        })
+
+        top.InputBegan:Connect(function(i) -- simple spy drag is so fucking hot, but ugly and big
+            if(i.UserInputType == Enum.UserInputType.MouseButton1) then
+                local lastPos = inputs:GetMouseLocation()
+                local mainPos = main.AbsolutePosition
+                local offset = mainPos - lastPos
+                local currentPos = offset + lastPos
+
+                local connection
+                connection = loops.RenderStepped:Connect(function()
+                    local newPos = inputs:GetMouseLocation()
+                    if newPos ~= lastPos then
+                        local currentX = (offset + newPos).X
+                        local currentY = (offset + newPos).Y
+                        local viewportSize = workspace.CurrentCamera.ViewportSize
+
+                        if (currentX < 0 and currentX < currentPos.X) or (currentX > (viewportSize.X - top.AbsoluteSize.X) and currentX > currentPos.X) then
+                            currentX = currentX < 0 and 0 or viewportSize.X - top.AbsoluteSize.X
+                        end
+
+                        if (currentY < 0 and currentY < currentPos.Y) or (currentY > (viewportSize.Y - main.AbsoluteSize.Y - 36) and currentY > currentPos.Y) then
+                            currentY = currentY < 0 and 0 or viewportSize.Y - main.AbsoluteSize.Y - 36
+                        end
+
+                        lastPos = newPos
+                        currentPos = Vector2.new(currentX, currentY)
+                        anim:Create(main, TweenInfo.new(0.008), {Position = UDim2.new(0, currentPos.X, 0, currentPos.Y)}):Play()
+                    end
+                end)
+                table.insert(self.storage, connection)
+
+                table.insert(self.storage, inputs.InputEnded:Connect(function(i2)
+                    if(connection and i2 == i) then
+                        connection:Disconnect()
+                    end
+                end))
+            end
+        end)
+
+        self.inst = gui
+        for _, tab in next, self.tabs do
+            tab:Init(selection, tabs)
+
+            for _, section in next, tab.sections do
+                section:Init(tab.containers[section.pos])
+
+                for _, object in next, section.objects do
+                    object:Init(section.container)
+
+                    if(object.subs) then
+                        for _, sub in next, object.subs do
+                            sub:Init(object.container, object.button)
+                        end
+                    end
+                end
+            end
+        end
+
+        if(self.tabs[1]) then
+            self.tabs[1]:Show()
+        end
+
+        self.name = name
+        self.extension = extension
+        self.build = build
+    end
+
+    function menu:Remove()
+        if(menu and menu.inst) then
+            for _, connection in next, self.storage do
+                connection:Disconnect()
+            end
+
+            menu.inst:Destroy()
+            menu = nil
+        end
+    end
+
+    function menu:Toggle(state)
+        self.inst.Enabled = state or not self.inst.Enabled
+    end
+
+    function menu:Notification(text, time)
+        if(not self.notifications) then
+            local notifications = create("ScreenGui", {
+                Parent = self.inst
+            })
+
+            notifications.ChildRemoved:Connect(function()
+                if(#notifications:GetChildren() <= 0) then
+                    return
+                end
+
+                for pos_in_list, notification in next, self.notifications:GetChildren() do
+                    animate(notification, {time = 0.5}, {
+                        Position = UDim2.new(0, 10, 0, 40 + ((pos_in_list - 1) * 35))
+                    })
+                end
+            end)
+
+            self.notifications = notifications
+        end
+
+        local position = UDim2.new(0, 10, 0, 40 + (#self.notifications:GetChildren() * 35))
+
+        local main = create("Frame", {
+            Parent = self.notifications,
+            BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+            BorderColor3 = Color3.fromRGB(0, 0, 0),
+            Size = UDim2.new(0, 334, 0, 25)
+        })
+
+        local back = create("Frame", {
+            Parent = main,
+            AnchorPoint = Vector2.new(0.5, 1),
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BorderColor3 = Color3.fromRGB(60, 60, 60),
+            Position = UDim2.new(0.5, 0, 1, -1),
+            Size = UDim2.new(1, -3, 1, -2)
+        })
+
+        local text = create("TextLabel", {
+            Parent = back,
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundTransparency = 1.000,
+            Size = UDim2.new(1, 0, 1, 0),
+            Font = Enum.Font.Gotham,
+            Text = text,
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            TextSize = 14.000,
+            TextTransparency = 0.100
+        })
+
+        main.Size = UDim2.new(0, text.TextBounds.X + 10, 0, 25)
+        main.Position = UDim2.new(0, -main.Size.X.Offset, 0, position.Y.Offset)
+
+        coroutine.wrap(function()
+            animate(main, {time = 0.5}, {Position = UDim2.new(0, 10, 0, main.Position.Y.Offset)})
+            wait(time or 2)
+            animate(main, {time = 0.5}, {Position = UDim2.new(0, -main.Size.X.Offset, 0, main.Position.Y.Offset)})
+            wait(0.5)
+            main:Destroy()
+        end)()
+    end 
+
+    function menu:Watermark(visible)
+        if(not self.watermark) then
+            local watermark = create("ScreenGui", {
+                Parent = self.inst
+            })
+
+            local main = create("Frame", {
+                Parent = watermark,
+                BackgroundColor3 = Color3.fromRGB(52, 134, 235),
+                BorderColor3 = Color3.fromRGB(0, 0, 0),
+                Position = UDim2.new(0, 10, 0, 10),
+                Size = UDim2.new(0, 244, 0, 25)
+            })
+
+            local back = create("Frame", {
+                Parent = main,
+                AnchorPoint = Vector2.new(0.5, 1),
+                BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                BorderColor3 = Color3.fromRGB(60, 60, 60),
+                Position = UDim2.new(0.5, 0, 1, -1),
+                Size = UDim2.new(1, -2, 1, -3)
+            })
+
+            local text = create("TextLabel", {
+                Parent = back,
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BackgroundTransparency = 1.000,
+                Size = UDim2.new(1, 0, 1, 0),
+                Font = Enum.Font.Gotham,
+                Text = string.format("%s | %s | %s", self.name, self.build, os.date("%b, %d, %Y")),
+                TextColor3 = Color3.fromRGB(255, 255, 255),
+                TextSize = 14.000,
+                TextTransparency = 0.100
+            })
+
+            main.Size = UDim2.new(0, text.TextBounds.X + 10, 0, 25)
+
+            self.watermark = watermark
+        end
+
+        self.watermark.Enabled = visible or not self.watermark.Enabled
+    end
+
+    -- config functions
+    function menu:GetConfigs(specific) -- if config is definied <string> will return that config or false 
+        local configs = {}
+
+        for _, file in next, listfiles() do
+            local name = string.sub(file, 1, #file - (#self.extension + 1))
+            local extensions = string.split(file, ".")
+            local extension = extensions[#extensions]
+            local content = readfile(file)
+
+            if(extension ~= self.extension or not json:is_json(content)) then
+                continue -- file is not config
+            end
+
+            if(specific and file == specific) then
+                return true, json.decode(content)
+            end
+
+            table.insert(configs, {
+                name = name,
+                config = json.decode(content)
+            })
+        end
+
+        if(specific) then
+            return false
+        end
+
+        return configs
+    end
+
+    function menu:SaveConfig(name)
+        if(name == "Default" or name == "nil") then
+            return menu:Notification("Invalid file name")
+        end
+
+        local data = {}
+
+        for flag, value in next, self.flags do
+            if(flag == "nil") then
+                continue
+            end
+
+            if(type(value) == "Color3") then
+                value = {value.r, value.g, value.b}
+            end
+
+            data[flags] = value
+        end
+
+        writefile(name .. "." .. self.extension, json.encode(data))
+        menu:Notification("Saved config to " .. name .. "." .. self.extension)
+    end
+
+    function menu:LoadConfig(name)
+        local exsists, config = self:GetConfigs(name)
+        
+        if(not exsists) then
+            return menu:Notification("Config " .. name .. "." .. self.extension .. " dose not exsist")
+        end
+
+        for _, tab in next, self.tabs do
+            -- if(tab.name == "Settings") then
+            --    "continue"
+            -- end
+
+            for _, section in next, tab.sections do
+                for _, object in next, section.objects do
+                    if(object.flag and config[object.flag]) then
+
+
+                        if(object.subs) then
+                            for _, sub in next, object.subs do
+
+                            end
+                        end
+
+                    end
+                end
+            end
+        end
+
+        menu:Notification("Loaded " .. name .. "." .. self.extension)
+    end
+
+    function menu:DeleteConfig(name)
+
+    end
+
+    -- other
+    local hide_con
+    hide_con = inputs.InputBegan:Connect(function(input, gpe)
+        if(not menu) then
+            hide_con:Disconnect()
+            return
+        end
+
+        if(not inputs:GetFocusedTextBox() and (input.KeyCode == Enum.KeyCode[menu.flags["toggle_key"] or "RightShift"])) then
+            menu:Toggle()
+        end
+    end)
+end
